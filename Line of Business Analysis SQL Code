@@ -1,0 +1,253 @@
+SELECT
+    DAY_OF_WEEK,
+    TO_DATE(CALL_START_EASTERN_DT) AS CALL_DATE,
+    LOB,
+    QUEUE_NAME,
+    TO_VARCHAR(
+        TIME_SLICE(
+            CALL_START_EASTERN_DT,
+            30,
+            'MINUTE',
+            'START'
+        ),
+        'HH24:MI:SS'
+    ) AS INTERVAL_EST,
+
+    /* Offered */
+    SUM(
+        CASE
+            WHEN CALL_QUEUE_OFFERRED_IND = 1
+             AND (CALL_ANSWR_IND = 1 OR CALL_ABAN_IND = 1)
+            THEN 1
+            ELSE 0
+        END
+    ) AS OFFERED,
+
+    /* Answered */
+    SUM(
+        CASE
+            WHEN CALL_QUEUE_OFFERRED_IND = 1
+             AND CALL_ANSWR_IND = 1
+            THEN 1
+            ELSE 0
+        END
+    ) AS ANSWERED,
+
+    /* Abandoned */
+    SUM(
+        CASE
+            WHEN CALL_QUEUE_OFFERRED_IND = 1
+             AND CALL_ABAN_IND = 1
+            THEN 1
+            ELSE 0
+        END
+    ) AS ABANDONED,
+
+    /* Abandon % */
+    ROUND(
+        100 *
+        SUM(
+            CASE
+                WHEN CALL_QUEUE_OFFERRED_IND = 1
+                 AND CALL_ABAN_IND = 1
+                THEN 1
+                ELSE 0
+            END
+        )
+        /
+        NULLIF(
+            SUM(
+                CASE
+                    WHEN CALL_QUEUE_OFFERRED_IND = 1
+                     AND (CALL_ANSWR_IND = 1 OR CALL_ABAN_IND = 1)
+                    THEN 1
+                    ELSE 0
+                END
+            ),
+            0
+        ),
+        2
+    ) AS ABANDON_PCT,
+
+    /* ASA - Matches Claims Logic */
+SUM(
+    CASE
+        WHEN CALL_QUEUE_OFFERRED_IND = 1
+         AND CALL_ANSWR_IND = 1
+         AND CALL_ST_DESC ILIKE 'CALLBACK'
+        THEN 0
+
+        WHEN CALL_QUEUE_OFFERRED_IND = 1
+         AND CALL_ANSWR_IND = 1
+        THEN NVL(CALL_QUEUE_TIME_DUR,0)
+           + NVL(TTL_RING_DUR,0)
+
+        ELSE 0
+    END
+) AS SUM_SPEED_OF_ANSWER,
+
+SUM(
+    CASE
+        WHEN CALL_QUEUE_OFFERRED_IND = 1
+         AND CALL_ANSWR_IND = 1
+        THEN 1
+        ELSE 0
+    END
+) AS ACD_CALL_COUNT,
+
+    /* AHT - Matches AWS Claims Logic */
+SUM(
+    CASE
+        WHEN CALL_QUEUE_OFFERRED_IND = 1
+         AND CALL_ANSWR_IND = 1
+        THEN NVL(TALK_DUR,0)
+           + NVL(HOLD_DUR,0)
+           + NVL(AFTER_CALL_WORK_DUR,0)
+           + NVL(AFTER_CALL_WORK_DUR_AUTO,0)
+        ELSE 0
+    END
+) AS SUM_HANDLE_TIME,
+
+    /* Workload Hours */
+    ROUND(
+        SUM(
+            CASE
+                WHEN CALL_QUEUE_OFFERRED_IND = 1
+                 AND CALL_ANSWR_IND = 1
+                THEN NVL(TALK_DUR,0)
+                   + NVL(HOLD_DUR,0)
+                   + NVL(AFTER_CALL_WORK_DUR,0)
+                   + NVL(AFTER_CALL_WORK_DUR_AUTO,0)
+                ELSE 0
+            END
+        ) / 3600,
+        2
+    ) AS WORKLOAD_HOURS,
+
+    /* Erlangs */
+    ROUND(
+        SUM(
+            CASE
+                WHEN CALL_QUEUE_OFFERRED_IND = 1
+                 AND CALL_ANSWR_IND = 1
+                THEN NVL(TALK_DUR,0)
+                   + NVL(HOLD_DUR,0)
+                   + NVL(AFTER_CALL_WORK_DUR,0)
+                   + NVL(AFTER_CALL_WORK_DUR_AUTO,0)
+                ELSE 0
+            END
+        ) / 1800,
+        2
+    ) AS ERLANGS,
+
+    /* Distinct Agents */
+    COUNT(
+        DISTINCT CASE
+            WHEN CALL_QUEUE_OFFERRED_IND = 1
+             AND CALL_ANSWR_IND = 1
+            THEN LOGIN_ID
+        END
+    ) AS AGENTS_HANDLING,
+
+    /* Occupancy */
+    ROUND(
+        (
+            SUM(
+                CASE
+                    WHEN CALL_QUEUE_OFFERRED_IND = 1
+                     AND CALL_ANSWR_IND = 1
+                    THEN NVL(TALK_DUR,0)
+                       + NVL(HOLD_DUR,0)
+                       + NVL(AFTER_CALL_WORK_DUR,0)
+                       + NVL(AFTER_CALL_WORK_DUR_AUTO,0)
+                    ELSE 0
+                END
+            )
+            /
+            NULLIF(
+                COUNT(
+                    DISTINCT CASE
+                        WHEN CALL_QUEUE_OFFERRED_IND = 1
+                         AND CALL_ANSWR_IND = 1
+                        THEN LOGIN_ID
+                    END
+                ) * 1800,
+                0
+            )
+        ) * 100,
+        2
+    ) AS OCCUPANCY_PCT,
+
+    /* Queue Callback Metrics */
+    SUM(
+        CASE
+            WHEN CALLBACK_OFFERED_IND = 1
+             AND TRNSFR_SEQ_NUM = 1
+            THEN 1
+            ELSE 0
+        END
+    ) AS QCB_OFFERED,
+
+    SUM(
+        CASE
+            WHEN CALLBACK_OFFERED_IND = 1
+             AND CALLBACK_ACCPT_IND = 1
+             AND TRNSFR_SEQ_NUM = 1
+            THEN 1
+            ELSE 0
+        END
+    ) AS QCB_ACCEPTED,
+
+    SUM(
+        CASE
+            WHEN MEDIA_TYP_DESC ILIKE 'epCallback'
+             AND CALL_ANSWR_IND = 1
+            THEN 1
+            ELSE 0
+        END
+    ) AS QCB_ANSWERED,
+
+    /* Transfer Metric */
+    SUM(
+        CASE
+            WHEN CALL_QUEUE_OFFERRED_IND = 1
+             AND CALL_ANSWR_IND = 1
+            THEN NVL(CALL_TRNSFR_IND,0)
+            ELSE 0
+        END
+    ) AS TRANSFERS_OUT
+
+FROM PRD_OPS_DB.APP_BIENT_CURATE.ENT_CALL_V2
+
+WHERE
+    LOB = 'Group Benefits'
+    AND CALL_QUEUE_OFFERRED_IND = 1
+    AND INBND_IND = 1
+
+GROUP BY
+    DAY_OF_WEEK,
+    TO_DATE(CALL_START_EASTERN_DT),
+    LOB,
+    QUEUE_NAME,
+    TO_VARCHAR(
+        TIME_SLICE(
+            CALL_START_EASTERN_DT,
+            30,
+            'MINUTE',
+            'START'
+        ),
+        'HH24:MI:SS'
+    )
+
+ORDER BY
+    CASE DAY_OF_WEEK
+        WHEN 'MONDAY' THEN 1
+        WHEN 'TUESDAY' THEN 2
+        WHEN 'WEDNESDAY' THEN 3
+        WHEN 'THURSDAY' THEN 4
+        WHEN 'FRIDAY' THEN 5
+        WHEN 'SATURDAY' THEN 6
+        WHEN 'SUNDAY' THEN 7
+   END, 
+   INTERVAL_EST,
+   QUEUE_NAME;
